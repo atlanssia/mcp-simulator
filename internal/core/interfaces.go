@@ -8,13 +8,17 @@ type VirtualServer interface {
 	Stop(ctx context.Context) error
 	ID() string
 	Config() ServerConfig
+	Status() string
+	IsRunning() bool
+	GetRegistry() Registry
 }
 
 // ServerConfig holds configuration for a VirtualServer.
 type ServerConfig struct {
-	ID   string
-	Port int
-	Name string
+	ID     string `json:"id"`
+	Port   int    `json:"port"`
+	Name   string `json:"name"`
+	Status string `json:"status"` // "stopped", "starting", "running", "error"
 }
 
 // MockStrategy defines how to generate a response for a given request.
@@ -28,6 +32,7 @@ type Registry interface {
 	RegisterResource(resource Resource) error
 	RegisterPrompt(prompt Prompt) error
 	GetTool(name string) (Tool, bool)
+	ListTools() []Tool
 	// Add other lookup methods as needed
 }
 

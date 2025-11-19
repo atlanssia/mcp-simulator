@@ -28,7 +28,7 @@ build-web: install-web
 # Build Go server with embedded frontend
 build-server:
 	@echo "Building Go server with embedded frontend..."
-	go build -o mcp-simulator ./cmd/mcp-simulator
+	go build -o mcp-simulator .
 
 # Complete build: web + server
 build: build-web build-server

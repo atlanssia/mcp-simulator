@@ -48,4 +48,14 @@ func (r *InMemoryRegistry) GetTool(name string) (Tool, bool) {
 	return t, ok
 }
 
+func (r *InMemoryRegistry) ListTools() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	tools := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		tools = append(tools, t)
+	}
+	return tools
+}
+
 // Add other getters as needed

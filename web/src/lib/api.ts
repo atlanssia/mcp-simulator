@@ -1,16 +1,43 @@
 import axios from 'axios';
 
-const API_BASE = '/api';
 
 export interface ServerConfig {
     id: string;
     name: string;
     port: number;
+    status?: string; // "stopped", "starting", "running", "error"
 }
 
 export interface GenerateRequest {
     prompt: string;
-    schema: Record<string, any>;
+    schema: Record<string, unknown>;
+}
+
+export interface Tool {
+    name: string;
+    description: string;
+    inputSchema: Record<string, unknown>;
+}
+
+export interface LLMConfig {
+    provider: string;
+    api_key: string;
+    base_url: string;
+    model: string;
+    temperature: number;
+    system_prompt: string;
+}
+
+export interface Provider {
+    id: string;
+    name: string;
+    base_url: string;
+}
+
+export interface ModelInfo {
+    name: string;
+    display_name: string;
+    free: boolean;
 }
 
 export interface CallToolResult {
@@ -21,13 +48,36 @@ export interface CallToolResult {
     isError?: boolean;
 }
 
+const axiosInstance = axios.create({
+    baseURL: '/api',
+});
+
 export const api = {
     // Server management
-    listServers: () => axios.get<ServerConfig[]>(`${API_BASE}/servers`),
-    createServer: (config: ServerConfig) => axios.post<ServerConfig>(`${API_BASE}/servers`, config),
-    startServer: (id: string) => axios.post(`${API_BASE}/servers/${id}/start`),
-    stopServer: (id: string) => axios.post(`${API_BASE}/servers/${id}/stop`),
+    listServers: () => axiosInstance.get<ServerConfig[]>('/servers'),
+    createServer: (config: ServerConfig) => axiosInstance.post<ServerConfig>('/servers', config),
+    startServer: (id: string) => axiosInstance.post(`/servers/${id}/start`),
+    stopServer: (id: string) => axiosInstance.post(`/servers/${id}/stop`),
+
+    // Tool management
+    listTools: (serverId: string) => axiosInstance.get<Tool[]>(`/servers/${serverId}/tools`),
+    createTool: (serverId: string, tool: Tool) => axiosInstance.post<Tool>(`/servers/${serverId}/tools`, tool),
+    updateTool: (serverId: string, toolName: string, tool: Tool) => axiosInstance.put<Tool>(`/servers/${serverId}/tools/${toolName}`, tool),
+    deleteTool: (serverId: string, toolName: string) => axiosInstance.delete(`/servers/${serverId}/tools/${toolName}`),
+
+    // LLM configuration
+    getLLMConfig: () => axiosInstance.get<LLMConfig>('/config/llm'),
+    updateLLMConfig: (config: LLMConfig) => axiosInstance.post('/config/llm', config),
+    listProviders: () => axiosInstance.get<Provider[]>('/config/llm/providers'),
+    listModels: (provider: string, freeOnly?: boolean) =>
+        axiosInstance.get<ModelInfo[]>('/config/llm/models', {
+            params: { provider, free: freeOnly || undefined }
+        }),
+    listDynamicModels: (provider: string, freeOnly?: boolean) =>
+        axiosInstance.get<ModelInfo[]>('/config/llm/models/dynamic', {
+            params: { provider, free: freeOnly || undefined }
+        }),
 
     // AI generation
-    generateMock: (req: GenerateRequest) => axios.post<CallToolResult>(`${API_BASE}/ai/generate`, req),
+    generateMock: (request: GenerateRequest) => axiosInstance.post<CallToolResult>('/ai/generate', request),
 };

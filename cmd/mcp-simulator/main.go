@@ -12,7 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed web/dist
+//go:embed ../../web/dist
 var staticFiles embed.FS
 
 func main() {
