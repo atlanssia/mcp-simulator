@@ -27,6 +27,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
         model: ''
     });
     const [generating, setGenerating] = useState(false);
+    const [schemaJson, setSchemaJson] = useState('');
 
     const fetchTools = async () => {
         try {
@@ -49,7 +50,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
                 const response = await api.listDynamicModels(provider);
                 if (response.data.length > 0) {
                     setModels(response.data);
-                    setGenParams(prev => ({ ...prev, model: response.data[0].name }));
+                    if (!genParams.model) setGenParams(prev => ({ ...prev, model: response.data[0].name }));
                     return;
                 }
             } catch (e) {
@@ -59,7 +60,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
             // Fallback to static
             const response = await api.listModels(provider);
             setModels(response.data);
-            if (response.data.length > 0) {
+            if (response.data.length > 0 && !genParams.model) {
                 setGenParams(prev => ({ ...prev, model: response.data[0].name }));
             }
         } catch (error) {
@@ -73,28 +74,56 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
     }, [serverId]);
 
     const handleCreate = () => {
-        setIsCreating(true);
-        setEditingTool({
+        const newTool = {
             name: '',
             description: '',
-            inputSchema: { type: 'object', properties: {} },
-        });
+            inputSchema: {
+                type: 'object',
+                properties: {},
+            }
+        };
+        setEditingTool(newTool);
+        setSchemaJson(JSON.stringify(newTool.inputSchema, null, 2));
+        setIsCreating(true);
+        setShowGenSettings(false);
+    };
+
+    const handleEdit = (tool: Tool) => {
+        setEditingTool(tool);
+        setSchemaJson(JSON.stringify(tool.inputSchema, null, 2));
+        setIsCreating(false);
+        setShowGenSettings(false);
     };
 
     const handleSave = async () => {
         if (!editingTool) return;
 
         try {
-            if (isCreating) {
-                await api.createTool(serverId, editingTool);
-            } else {
-                await api.updateTool(serverId, editingTool.name, editingTool);
+            // Parse and validate schema JSON
+            let parsedSchema;
+            try {
+                parsedSchema = JSON.parse(schemaJson);
+            } catch (e) {
+                alert('Invalid JSON in Input Schema');
+                return;
             }
-            await fetchTools();
+
+            const toolToSave = {
+                ...editingTool,
+                inputSchema: parsedSchema
+            };
+
+            if (isCreating) {
+                await api.createTool(serverId, toolToSave);
+            } else {
+                await api.updateTool(serverId, toolToSave.name, toolToSave);
+            }
             setEditingTool(null);
             setIsCreating(false);
+            fetchTools();
         } catch (error) {
             console.error('Failed to save tool:', error);
+            alert('Failed to save tool');
         }
     };
 
@@ -112,6 +141,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
     const handleCancel = () => {
         setEditingTool(null);
         setIsCreating(false);
+        setSchemaJson('');
     };
 
     const handleGenerateSchema = async () => {
@@ -128,7 +158,9 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
             });
 
             if (response.data && typeof response.data === 'object') {
-                setEditingTool({ ...editingTool, inputSchema: response.data as Record<string, unknown> });
+                const newSchema = response.data as Record<string, unknown>;
+                setEditingTool({ ...editingTool, inputSchema: newSchema });
+                setSchemaJson(JSON.stringify(newSchema, null, 2));
             }
         } catch (error: any) {
             console.error('Failed to generate schema:', error);
@@ -294,15 +326,10 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
                                     Input Schema (JSON)
                                 </label>
                                 <textarea
-                                    value={JSON.stringify(editingTool.inputSchema, null, 2)}
-                                    onChange={(e) => {
-                                        try {
-                                            const schema = JSON.parse(e.target.value);
-                                            setEditingTool({ ...editingTool, inputSchema: schema });
-                                        } catch { }
-                                    }}
+                                    value={schemaJson}
+                                    onChange={(e) => setSchemaJson(e.target.value)}
                                     className="w-full bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-white font-mono text-sm"
-                                    rows={8}
+                                    rows={10}
                                 />
                             </div>
                             <div className="flex gap-2">
@@ -370,10 +397,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
                                                     <FlaskConical className="w-4 h-4 text-green-400" />
                                                 </button>
                                                 <button
-                                                    onClick={() => {
-                                                        setEditingTool(tool);
-                                                        setIsCreating(false);
-                                                    }}
+                                                    onClick={() => handleEdit(tool)}
                                                     className="p-2 hover:bg-gray-700 rounded-lg transition-colors"
                                                 >
                                                     <Edit2 className="w-4 h-4 text-blue-400" />

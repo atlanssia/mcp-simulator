@@ -139,7 +139,7 @@ func (h *Handler) GenerateMock(c *gin.Context) {
 }
 
 type GenerateSchemaRequest struct {
-	Description string              `json:"description"`
+	Description string                `json:"description"`
 	Params      core.GenerationParams `json:"params"`
 }
 
@@ -236,6 +236,9 @@ func (h *Handler) CreateTool(c *gin.Context) {
 		}
 	}
 
+	// Notify server to update MCP tools
+	targetServer.UpdateTools()
+
 	c.JSON(http.StatusCreated, tool)
 }
 
@@ -287,6 +290,9 @@ func (h *Handler) UpdateTool(c *gin.Context) {
 		}
 	}
 
+	// Notify server to update MCP tools
+	targetServer.UpdateTools()
+
 	c.JSON(http.StatusOK, tool)
 }
 
@@ -328,6 +334,9 @@ func (h *Handler) DeleteTool(c *gin.Context) {
 			c.Header("X-Warning", "Failed to persist tools: "+err.Error())
 		}
 	}
+
+	// Notify server to update MCP tools
+	targetServer.UpdateTools()
 
 	c.JSON(http.StatusOK, gin.H{"message": "tool deleted"})
 }
@@ -392,7 +401,7 @@ func (h *Handler) GenerateToolMockResponse(c *gin.Context) {
 
 	var req struct {
 		Params     map[string]interface{} `json:"params"`
-		Generation core.GenerationParams    `json:"generation"`
+		Generation core.GenerationParams  `json:"generation"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/atlanssia/mcp-simulator/internal/infra/transport"
+	"github.com/atlanssia/mcp-simulator/internal/infra/logger"
+	"github.com/atlanssia/mcp-simulator/internal/infra/middleware"
+	"go.uber.org/zap"
 )
 
 // MockGenerator interface for generating mock data (avoids circular dependency)
@@ -58,6 +60,7 @@ type BaseVirtualServer struct {
 	status    string
 	mu        sync.RWMutex
 	generator MockGenerator
+	mcpServer *MCPServerWrapper // NEW: mcp-go server wrapper
 }
 
 func NewBaseVirtualServer(config ServerConfig, registry Registry, generator MockGenerator) *BaseVirtualServer {
@@ -106,19 +109,63 @@ func (s *BaseVirtualServer) Start(ctx context.Context) error {
 	s.status = "starting"
 	s.mu.Unlock()
 
+	// Create official MCP SDK server wrapper
+	var err error
+	s.mcpServer, err = NewMCPServerWrapper(
+		s.config.Name,
+		s.registry,
+		s.generator,
+	)
+	if err != nil {
+		s.mu.Lock()
+		s.status = "error"
+		s.mu.Unlock()
+		return fmt.Errorf("failed to create MCP server: %w", err)
+	}
+
+	// Get HTTP handler from official MCP SDK
+	// This automatically handles:
+	// - GET / : discovery
+	// - GET / with Accept:text/event-stream : SSE connection + endpoint event
+	// - POST / : JSON-RPC requests (with SSE response if session exists)
+	mcpHandler := s.mcpServer.GetHTTPHandler()
+
+	// Create router
 	mux := http.NewServeMux()
-	mux.HandleFunc("/sse", s.handleSSE)
-	mux.HandleFunc("/messages", s.handleMessages)
+
+	// Mount official MCP SDK handler directly at root
+	// No need for SSEWrapperHandler - SDK handles everything automatically
+	mux.Handle("/", mcpHandler)
+
+	// Optional: Keep /mcp/sse alias for backward compatibility
+	mux.Handle("/mcp/sse", mcpHandler)
+	mux.Handle("/messages", mcpHandler)
+
+	// Initialize logger for this virtual server
+	logFile := fmt.Sprintf("logs/%s.log", s.config.ID)
+	logger, err := logger.NewLogger(logFile)
+	if err != nil {
+		log.Printf("Failed to initialize logger for server %s: %v", s.config.ID, err)
+		// Fallback to default logger if file init fails
+		logger, _ = zap.NewProduction()
+	}
+
+	// Apply Access Log middleware with this server's logger
+	handler := middleware.AccessLog(logger)(mux)
 
 	s.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", s.config.Port),
-		Handler: mux,
+		Handler: handler,
 	}
 
-	log.Printf("Starting Virtual Server %s on port %d", s.config.Name, s.config.Port)
+	logger.Info("Starting Virtual Server",
+		zap.String("name", s.config.Name),
+		zap.Int("port", s.config.Port),
+	)
+
 	go func() {
 		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("Server %s error: %v", s.config.Name, err)
+			logger.Error("Server error", zap.Error(err))
 			s.mu.Lock()
 			s.status = "error"
 			s.mu.Unlock()
@@ -144,128 +191,10 @@ func (s *BaseVirtualServer) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (s *BaseVirtualServer) handleSSE(w http.ResponseWriter, r *http.Request) {
-	adapter := transport.NewSSEAdapter()
-	adapter.HandleSSE(w, r)
-}
-
-func (s *BaseVirtualServer) handleMessages(w http.ResponseWriter, r *http.Request) {
-	var req JSONRPCRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.sendError(w, nil, -32700, "Parse error")
-		return
+func (s *BaseVirtualServer) UpdateTools() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.mcpServer != nil {
+		s.mcpServer.UpdateTools()
 	}
-
-	// Route to appropriate method
-	var result interface{}
-	var err error
-
-	switch req.Method {
-	case "tools/list":
-		result, err = s.handleToolsList(r.Context())
-	case "tools/call":
-		result, err = s.handleToolsCall(r.Context(), req.Params)
-	default:
-		s.sendError(w, req.ID, -32601, fmt.Sprintf("Method not found: %s", req.Method))
-		return
-	}
-
-	if err != nil {
-		s.sendError(w, req.ID, -32603, err.Error())
-		return
-	}
-
-	s.sendResult(w, req.ID, result)
-}
-
-// handleToolsList returns list of available tools
-func (s *BaseVirtualServer) handleToolsList(ctx context.Context) (interface{}, error) {
-	tools := s.registry.ListTools()
-
-	// Convert to MCP format
-	mcpTools := make([]map[string]interface{}, len(tools))
-	for i, tool := range tools {
-		mcpTools[i] = map[string]interface{}{
-			"name":        tool.Name,
-			"description": tool.Description,
-			"inputSchema": tool.InputSchema,
-		}
-	}
-
-	return map[string]interface{}{
-		"tools": mcpTools,
-	}, nil
-}
-
-// handleToolsCall invokes a tool and generates mock data
-func (s *BaseVirtualServer) handleToolsCall(ctx context.Context, paramsRaw json.RawMessage) (interface{}, error) {
-	var params ToolsCallParams
-	if err := json.Unmarshal(paramsRaw, &params); err != nil {
-		return nil, fmt.Errorf("invalid params: %v", err)
-	}
-
-	// Get tool from registry
-	tool, ok := s.registry.GetTool(params.Name)
-	if !ok {
-		return nil, fmt.Errorf("tool not found: %s", params.Name)
-	}
-
-	// Generate mock data using AI
-	mockData, err := s.generator.GenerateMockResponseWithParams(
-		ctx,
-		tool.Name,
-		tool.Description,
-		tool.InputSchema,
-		params.Arguments,
-		GenerationParams{
-			Model:        s.generator.GetDefaultModel(),
-			Temperature:  0.7,
-			SystemPrompt: "",
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate mock data: %v", err)
-	}
-
-	// Return in MCP format
-	return map[string]interface{}{
-		"content": []map[string]interface{}{
-			{
-				"type": "text",
-				"text": toJSONString(mockData),
-			},
-		},
-	}, nil
-}
-
-func (s *BaseVirtualServer) sendResult(w http.ResponseWriter, id interface{}, result interface{}) {
-	resp := JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
-}
-
-func (s *BaseVirtualServer) sendError(w http.ResponseWriter, id interface{}, code int, message string) {
-	resp := JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Error: &RPCError{
-			Code:    code,
-			Message: message,
-		},
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK) // JSON-RPC errors still return 200
-	json.NewEncoder(w).Encode(resp)
-}
-
-func toJSONString(v interface{}) string {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return fmt.Sprintf("%v", v)
-	}
-	return string(b)
 }

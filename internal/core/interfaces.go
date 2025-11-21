@@ -11,6 +11,7 @@ type VirtualServer interface {
 	Status() string
 	IsRunning() bool
 	GetRegistry() Registry
+	UpdateTools()
 }
 
 // ServerConfig holds configuration for a VirtualServer.
