@@ -26,12 +26,18 @@ go.work.sum
 
 # Build artifacts
 /mcp-simulator
+/mcp-simulator-linux-amd64
 web/dist
 web/node_modules
 web/package-lock.json
 
 # env file
 .env
+
+# Data directory (runtime state)
+data/
+
+logs/
 
 # Editor/IDE
 # .idea/

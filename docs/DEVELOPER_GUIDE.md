@@ -275,7 +275,31 @@ func (g *Generator) GenerateMockResponse(ctx context.Context,
 - 生成模拟响应数据
 - 管理配置
 
-### 4. ServerManager
+### 4. MCP 协议支持
+
+每个虚拟服务器都实现了标准的 MCP JSON-RPC 2.0 协议。
+
+**接口端点**:
+- SSE (Server-Sent Events): `GET /sse`
+- JSON-RPC Messages: `POST /messages`
+
+**支持的方法**:
+
+1. **tools/list**
+   - 列出服务器上注册的所有工具
+   - 返回工具名称、描述和输入 Schema
+
+2. **tools/call**
+   - 调用指定工具
+   - 参数: `name` (工具名), `arguments` (调用参数)
+   - 行为: 使用配置的 LLM 自动生成符合 Schema 的模拟数据
+
+**代码实现**:
+- `internal/core/server.go`: 实现了 `handleMessages` 和 JSON-RPC 路由
+- `internal/core/generation_params.go`: 定义了生成参数结构
+- `internal/service/ai/generator.go`: 负责调用 LLM 生成数据
+
+### 5. ServerManager
 
 ```go
 type ServerManager struct {

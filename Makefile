@@ -8,6 +8,7 @@ help:
 	@echo "MCP Simulator - Build Targets"
 	@echo "=============================="
 	@echo "make build        - Build complete application (web + server) into single binary"
+	@echo "make build-linux  - Build for Linux/amd64"
 	@echo "make clean        - Clean all build artifacts"
 	@echo "make install-web  - Install web dependencies"
 	@echo "make build-web    - Build web frontend only"
@@ -34,10 +35,17 @@ build-server:
 build: build-web build-server
 	@echo "Build complete! Binary: ./mcp-simulator"
 
+# Build for Linux (amd64)
+build-linux: build-web
+	@echo "Building for Linux/amd64..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o mcp-simulator-linux-amd64 .
+	@echo "Build complete! Binary: ./mcp-simulator-linux-amd64"
+
 # Clean build artifacts
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -f mcp-simulator
+	rm -f mcp-simulator-linux-amd64
 	rm -rf web/dist
 	rm -rf web/node_modules
 	@echo "Clean complete!"

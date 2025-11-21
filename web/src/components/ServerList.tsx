@@ -2,12 +2,14 @@ import { useState, useEffect } from 'react';
 import { type ServerConfig, api } from '../lib/api';
 import { Play, Square, Wrench } from 'lucide-react';
 import { cn } from '../lib/utils';
-import { ToolManager } from './ToolManager';
 
-export function ServerList() {
+interface ServerListProps {
+    onSelectServer: (server: ServerConfig) => void;
+}
+
+export function ServerList({ onSelectServer }: ServerListProps) {
     const [servers, setServers] = useState<ServerConfig[]>([]);
     const [loading, setLoading] = useState(true);
-    const [selectedServer, setSelectedServer] = useState<ServerConfig | null>(null);
 
     const fetchServers = async () => {
         try {
@@ -147,7 +149,7 @@ export function ServerList() {
                                         <Square className="w-5 h-5" />
                                     </button>
                                     <button
-                                        onClick={() => setSelectedServer(server)}
+                                        onClick={() => onSelectServer(server)}
                                         className="p-2 rounded-lg transition-colors bg-purple-600 hover:bg-purple-700 text-white"
                                         title="Manage Tools"
                                     >
@@ -158,14 +160,6 @@ export function ServerList() {
                         </div>
                     ))}
                 </div>
-            )}
-
-            {selectedServer && (
-                <ToolManager
-                    serverId={selectedServer.id}
-                    serverName={selectedServer.name}
-                    onClose={() => setSelectedServer(null)}
-                />
             )}
         </div>
     );

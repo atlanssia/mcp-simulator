@@ -13,6 +13,18 @@ export interface GenerateRequest {
     schema: Record<string, unknown>;
 }
 
+export interface GenerationParams {
+    model?: string;
+    temperature?: number;
+    system_prompt?: string;
+    max_tokens?: number;
+}
+
+export interface GenerateSchemaRequest {
+    description: string;
+    params: GenerationParams;
+}
+
 export interface Tool {
     name: string;
     description: string;
@@ -24,14 +36,15 @@ export interface LLMConfig {
     api_key: string;
     base_url: string;
     model: string;
-    temperature: number;
-    system_prompt: string;
 }
 
 export interface Provider {
     id: string;
     name: string;
-    base_url: string;
+    requires_api_key: boolean;
+    default_base_url: string;
+    supports_models: boolean;
+    description: string;
 }
 
 export interface ModelInfo {
@@ -80,4 +93,7 @@ export const api = {
 
     // AI generation
     generateMock: (request: GenerateRequest) => axiosInstance.post<CallToolResult>('/ai/generate', request),
+    generateSchema: (request: GenerateSchemaRequest) => axiosInstance.post<Record<string, unknown>>('/ai/generate-schema', request),
+    generateToolMock: (serverId: string, toolName: string, params: any, generation: GenerationParams) =>
+        axiosInstance.post<any>(`/servers/${serverId}/tools/${toolName}/generate-mock`, { params, generation }),
 };

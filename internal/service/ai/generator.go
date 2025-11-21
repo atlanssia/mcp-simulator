@@ -12,27 +12,32 @@ import (
 	"sync"
 
 	"github.com/atlanssia/mcp-simulator/internal/core"
+	"go.uber.org/zap"
 )
 
 type Generator struct {
 	config core.LLMConfig
 	client *http.Client
 	mu     sync.RWMutex
+	logger *zap.Logger
 }
 
-func NewGenerator(apiKey string) *Generator {
-	if apiKey == "" {
-		apiKey = os.Getenv("OPENAI_API_KEY")
+func NewGenerator(config core.LLMConfig, logger *zap.Logger) *Generator {
+	// If config is empty (default), try to load from env
+	if config.APIKey == "" {
+		config.APIKey = os.Getenv("OPENAI_API_KEY")
 	}
-
-	config := core.DefaultLLMConfig()
-	if apiKey != "" {
-		config.APIKey = apiKey
+	if config.Provider == "" {
+		config = core.DefaultLLMConfig()
+		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+			config.APIKey = apiKey
+		}
 	}
 
 	return &Generator{
 		config: config,
 		client: &http.Client{},
+		logger: logger,
 	}
 }
 
@@ -41,6 +46,13 @@ func (g *Generator) UpdateConfig(config core.LLMConfig) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.config = config
+}
+
+// GetDefaultModel returns the configured model
+func (g *Generator) GetDefaultModel() string {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
+	return g.config.Model
 }
 
 // GetConfig returns the current LLM configuration
@@ -55,10 +67,165 @@ func (g *Generator) GetConfig() core.LLMConfig {
 	return config
 }
 
+// DefaultSystemPrompt for backward compatibility
+const (
+	DefaultModel        = "gpt-4o-mini"
+	DefaultTemperature  = 0.7
+	DefaultSystemPrompt = `You are a professional API schema generator. Your ONLY job is to output valid JSON schema objects.
+
+Rules:
+1. NEVER use markdown code blocks (no triple backticks)
+2. NEVER add explanations or conversational text
+3. ALWAYS start with { and end with }
+4. Output ONLY the raw JSON object
+
+When given a tool description, analyze it and output a JSON schema that matches this exact format:
+{
+  "type": "object",
+  "properties": {
+    "parameter_name": {
+      "type": "string",
+      "description": "what this parameter does"
+    }
+  },
+  "required": ["parameter_name"]
+}`
+)
+
+// GenerateToolSchema generates a JSON schema for a tool using default parameters
+// Deprecated: Use GenerateToolSchemaWithParams for more control
+func (g *Generator) GenerateToolSchema(ctx context.Context, description string) (map[string]interface{}, error) {
+	return g.GenerateToolSchemaWithParams(ctx, description, core.DefaultGenerationParams())
+}
+
+func (g *Generator) GenerateToolSchemaWithParams(ctx context.Context, description string, params core.GenerationParams) (map[string]interface{}, error) {
+	g.mu.RLock()
+	config := g.config
+	g.mu.RUnlock()
+
+	// System prompt is ALWAYS the fixed role definition
+	systemPrompt := DefaultSystemPrompt
+
+	// Construct user message with:
+	// 1. Custom user prompt (if provided)
+	// 2. Tool description
+	// 3. JSON structure template
+	userMessage := ""
+	if params.SystemPrompt != "" {
+		// User's custom instruction goes first
+		userMessage = params.SystemPrompt + "\n\n"
+	}
+
+	userMessage += fmt.Sprintf(`Task: Generate a JSON schema for this tool.
+
+Tool Description: %s
+
+Output ONLY the JSON schema object. Start your response with { and end with }. No other text.
+
+Required JSON structure:
+{
+  "type": "object",
+  "properties": {
+    "param_name": {
+      "type": "string|number|boolean|array|object",
+      "description": "parameter description"
+    }
+  },
+  "required": ["param_name"]
+}`, description)
+
+	// For ModelScope compatibility: enable_thinking must be false for non-streaming calls
+	enableThinking := false
+	reqBody := CompletionRequest{
+		Model: params.Model,
+		Messages: []Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMessage},
+		},
+		Temperature:    params.Temperature,
+		EnableThinking: &enableThinking,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, err
+	}
+
+	// Log the request body
+	if g.logger != nil {
+		g.logger.Info("LLM API Request",
+			zap.String("url", config.BaseURL+"/chat/completions"),
+			zap.String("model", params.Model),
+			zap.ByteString("request_body", jsonBody),
+		)
+	}
+
+	// Use configured base URL
+	url := config.BaseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+config.APIKey)
+
+	resp, err := g.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+
+	// Log the response body
+	if g.logger != nil {
+		g.logger.Info("LLM API Response",
+			zap.Int("status_code", resp.StatusCode),
+			zap.ByteString("response_body", body),
+		)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var completion CompletionResponse
+	if err := json.Unmarshal(body, &completion); err != nil {
+		return nil, err
+	}
+
+	if len(completion.Choices) == 0 {
+		return nil, fmt.Errorf("no choices returned")
+	}
+
+	content := completion.Choices[0].Message.Content
+
+	// Try to extract JSON from markdown code blocks if present
+	content = strings.TrimSpace(content)
+	if strings.HasPrefix(content, "```json") {
+		content = strings.TrimPrefix(content, "```json")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	} else if strings.HasPrefix(content, "```") {
+		content = strings.TrimPrefix(content, "```")
+		content = strings.TrimSuffix(content, "```")
+		content = strings.TrimSpace(content)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(content), &result); err != nil {
+		return nil, fmt.Errorf("failed to parse generated JSON: %w, content: %s", err, content)
+	}
+
+	return result, nil
+}
+
 type CompletionRequest struct {
-	Model       string    `json:"model"`
-	Messages    []Message `json:"messages"`
-	Temperature float64   `json:"temperature,omitempty"`
+	Model          string    `json:"model"`
+	Messages       []Message `json:"messages"`
+	Temperature    float64   `json:"temperature,omitempty"`
+	EnableThinking *bool     `json:"enable_thinking,omitempty"` // For ModelScope: must be false for non-streaming
 }
 
 type Message struct {
@@ -72,21 +239,23 @@ type CompletionResponse struct {
 	} `json:"choices"`
 }
 
+// GenerateMockData generates mock data using default parameters
+// Deprecated: Use GenerateMockDataWithParams for more control
 func (g *Generator) GenerateMockData(ctx context.Context, prompt string, schema map[string]interface{}) (interface{}, error) {
 	g.mu.RLock()
 	config := g.config
 	g.mu.RUnlock()
 
-	// Replace {description} placeholder in system prompt
-	systemPrompt := strings.ReplaceAll(config.SystemPrompt, "{description}", prompt)
+	// Use default parameters
+	systemPrompt := strings.ReplaceAll(DefaultSystemPrompt, "{description}", prompt)
 
 	reqBody := CompletionRequest{
-		Model: config.Model,
+		Model: DefaultModel,
 		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		},
-		Temperature: config.Temperature,
+		Temperature: DefaultTemperature,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
@@ -146,9 +315,14 @@ func (g *Generator) GenerateMockData(ctx context.Context, prompt string, schema 
 	return result, nil
 }
 
-// GenerateMockResponse generates realistic mock response data for a tool
-// based on its description and input schema
+// GenerateMockResponse generates realistic mock response data for a tool using default parameters
+// Deprecated: Use GenerateMockResponseWithParams for more control
 func (g *Generator) GenerateMockResponse(ctx context.Context, toolName, toolDescription string, inputSchema, sampleParams map[string]interface{}) (interface{}, error) {
+	return g.GenerateMockResponseWithParams(ctx, toolName, toolDescription, inputSchema, sampleParams, core.DefaultGenerationParams())
+}
+
+// GenerateMockResponseWithParams generates realistic mock response data with custom parameters
+func (g *Generator) GenerateMockResponseWithParams(ctx context.Context, toolName, toolDescription string, inputSchema, sampleParams map[string]interface{}, params core.GenerationParams) (interface{}, error) {
 	g.mu.RLock()
 	config := g.config
 	g.mu.RUnlock()
@@ -157,36 +331,69 @@ func (g *Generator) GenerateMockResponse(ctx context.Context, toolName, toolDesc
 	schemaBytes, _ := json.Marshal(inputSchema)
 	paramsBytes, _ := json.Marshal(sampleParams)
 
-	prompt := fmt.Sprintf(`Generate realistic mock response data for the following MCP tool.
+	// System prompt for mock data generation
+	systemPrompt := `You are a professional mock data generator. Your ONLY job is to output valid JSON data.
+
+Rules:
+1. NEVER use markdown code blocks (no triple backticks)
+2. NEVER add explanations or conversational text
+3. ALWAYS start with { or [ and end with } or ]
+4. Output ONLY the raw JSON data
+5. Generate REALISTIC and VARIED data
+6. For time-series or tabular data, generate multiple records (5-10 items)
+7. Use appropriate data types and realistic values`
+
+	// User message with task and examples
+	userMessage := ""
+	if params.SystemPrompt != "" {
+		// User's custom instructions (e.g., "生成5条患者体征数据，包含体温、心率、血压")
+		userMessage = params.SystemPrompt + "\n\n"
+	}
+
+	userMessage += fmt.Sprintf(`Task: Generate realistic mock response data for this MCP tool.
 
 Tool Name: %s
 Tool Description: %s
 Input Schema: %s
 Sample Parameters: %s
 
-Generate a realistic JSON response that this tool would return when called with the sample parameters.
-The response should be realistic and match the tool's purpose.
+Output Requirements:
+1. Return ONLY valid JSON (no markdown, no explanations)
+2. Data should be realistic and match the tool's purpose
+3. For time-series/tabular data, generate 5-10 records
+4. Use proper data types (strings in quotes, numbers without quotes)
 
-Examples:
-- For get_weather(city="Beijing"): return weather data with temperature, condition, humidity, etc.
-- For get_patient_vitals(patient_id="12345", count=5): return 5 records of temperature/blood pressure readings
-- For calculate_sum(a=10, b=20): return {"result": 30}
+Example formats:
+- Weather data: {"temperature": 22.5, "condition": "Partly Cloudy", "humidity": 65, "wind_speed": 12}
+- Patient vitals (multiple records): {"records": [{"time": "2023-10-15 08:30", "item": "体温", "value": "38.5", "unit": "℃"}, ...]}
+- Calculation result: {"result": 30, "operation": "sum"}
 
-Return ONLY the JSON response data, no markdown formatting or explanations.`,
-		toolName, toolDescription, string(schemaBytes), string(paramsBytes))
+Now generate the mock data:`, toolName, toolDescription, string(schemaBytes), string(paramsBytes))
 
+	// For ModelScope compatibility
+	enableThinking := false
 	reqBody := CompletionRequest{
-		Model: config.Model,
+		Model: params.Model,
 		Messages: []Message{
-			{Role: "system", Content: "You are a helpful assistant that generates realistic mock data for API tools. Return only valid JSON, no markdown."},
-			{Role: "user", Content: prompt},
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: userMessage},
 		},
-		Temperature: config.Temperature,
+		Temperature:    params.Temperature,
+		EnableThinking: &enableThinking,
 	}
 
 	jsonBody, err := json.Marshal(reqBody)
 	if err != nil {
 		return nil, err
+	}
+
+	// Log the request
+	if g.logger != nil {
+		g.logger.Info("LLM API Request (Mock Data)",
+			zap.String("url", config.BaseURL+"/chat/completions"),
+			zap.String("model", params.Model),
+			zap.ByteString("request_body", jsonBody),
+		)
 	}
 
 	url := config.BaseURL + "/chat/completions"
@@ -205,6 +412,15 @@ Return ONLY the JSON response data, no markdown formatting or explanations.`,
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+
+	// Log the response
+	if g.logger != nil {
+		g.logger.Info("LLM API Response (Mock Data)",
+			zap.Int("status_code", resp.StatusCode),
+			zap.ByteString("response_body", body),
+		)
+	}
+
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
 	}

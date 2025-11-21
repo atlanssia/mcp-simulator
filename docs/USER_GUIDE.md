@@ -193,8 +193,49 @@ curl -X POST "http://localhost:8080/api/servers/weather-api/tools/get_weather/ge
 
 4. 点击 **Save** 保存
 
+### 测试工具 (Test Tool)
+
+#### 快速测试工具功能
+
+使用 **🧪 Test Tool** 功能可以快速生成模拟数据并查看工具行为，无需编写代码。
+
+![Test Tool界面](images/test_tool_ui.png)
+
+**操作步骤**:
+
+1. 点击工具旁的 **绿色烧瓶图标** 🧪
+2. 在弹出的测试模态框中：
+   - **Sample Parameters**: 输入测试参数（JSON格式）
+     ```json
+     {"city": "深圳"}
+     ```
+   - **Custom Instructions**: 输入自定义需求（可选）
+     ```
+     生成5条患者体征监测数据，包括体温、心率、血压、血氧饱和度、尿量
+     ```
+   - **Model**: 选择使用的AI模型
+   - **Temperature**: 调整生成的随机性（0-2）
+3. 点击 **🧪 Generate Sample Data**
+4. 查看生成的 Mock 数据
+
+**Custom Instructions 示例**:
+
+| 场景 | 自定义指令 |
+|------|------------|
+| 时间序列数据 | 生成5条体征数据，从2023-10-15 08:00开始，每条间隔4-6小时 |
+| 多条记录 | 返回10个患者的基本信息 |
+| 特定格式 | 生成JSON数组格式的数据 |
+| 真实场景 | 模拟发烧病人的体温数据，范围37.5-39.5℃ |
+
+**优势**:
+- ✅ 无需编写 curl 命令
+- ✅ 实时查看生成结果
+- ✅ 快速验证工具定义
+- ✅ 支持自定义数据生成需求
+
 ### 编辑和删除工具
 
+- **测试**: 点击 **绿色烧瓶图标** 🧪，快速生成测试数据
 - **编辑**: 点击工具旁的 **铅笔图标**，修改后保存
 - **删除**: 点击 **垃圾桶图标**，确认删除
 - **查看详情**: 点击工具名称旁的 **▼** 展开 Schema
@@ -297,7 +338,22 @@ curl -X POST "http://localhost:8080/api/servers/weather-api/tools/get_weather/ge
 
 ---
 
-## 常见问题
+### 使用标准 MCP 客户端连接
+
+MCP Simulator 完全兼容标准 MCP 协议。您可以使用任何支持 MCP 的客户端（如 Claude Desktop、Cursor 等）连接到虚拟服务器。
+
+**连接信息**:
+- **类型**: SSE (Server-Sent Events)
+- **URL**: `http://localhost:{port}/sse` (例如 `http://localhost:9999/sse`)
+
+**功能**:
+- 客户端会自动发现所有配置的工具
+- 调用工具时，Simulator 会使用 AI 实时生成模拟数据
+- 支持查看工具的输入 Schema 和描述
+
+---
+
+## 常见问题 (FAQ)
 
 ### Q1: 如何开始使用？
 
@@ -349,15 +405,23 @@ curl -X POST "http://localhost:8080/api/servers/{server-id}/tools/{tool-name}/ge
 3. 在客户端代码中连接不同端口
 4. 系统会自动管理所有服务器
 
-### Q7: 配置会保存吗？
+### Q7: 数据会持久化吗？
 
 **A**: 
-当前版本配置仅在内存中，重启后会丢失。建议：
-- 记录重要的工具定义
-- 保存 API 调用示例
-- 未来版本将支持配置持久化
+是的，系统已支持数据持久化！
+- 所有配置保存在 `data/` 目录
+- 重启后自动恢复所有服务器、工具和LLM配置
+- 数据以 JSON 文件格式存储，方便备份
 
-### Q8: 如何获取帮助？
+### Q8: 如何快速测试工具？
+
+**A**: 
+1. 在 Tool Manager 中点击工具的 🧪 图标
+2. 输入测试参数和自定义指令
+3. 点击 "Generate Sample Data" 查看结果
+4. 无需编写任何代码！
+
+### Q9: 如何获取帮助？
 
 **A**: 
 - 查看本用户手册
@@ -412,6 +476,7 @@ curl -X POST "http://localhost:8080/api/servers/my-server/tools/my_tool/generate
 
 ---
 
-**版本**: 1.0.0  
+**版本**: 2.0.0  
 **更新日期**: 2025-11-20  
 **适用对象**: MCP Simulator 最终用户
+**新增功能**: Test Tool UI、数据持久化、自定义Mock数据生成

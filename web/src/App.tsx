@@ -2,11 +2,14 @@ import { useState } from 'react';
 import { ServerList } from './components/ServerList';
 import { CreateServerForm } from './components/CreateServerForm';
 import { LLMSettings } from './components/LLMSettings';
+import { ToolManager } from './components/ToolManager';
+import { type ServerConfig } from './lib/api';
 import { Server, Settings } from 'lucide-react';
 
 function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
+  const [selectedServer, setSelectedServer] = useState<ServerConfig | null>(null);
 
   const handleServerCreated = () => {
     setRefreshKey(prev => prev + 1);
@@ -41,7 +44,10 @@ function App() {
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
-            <ServerList key={refreshKey} />
+            <ServerList
+              key={refreshKey}
+              onSelectServer={setSelectedServer}
+            />
           </div>
           <div>
             <CreateServerForm onServerCreated={handleServerCreated} />
@@ -50,6 +56,14 @@ function App() {
       </div>
 
       {showSettings && <LLMSettings onClose={() => setShowSettings(false)} />}
+
+      {selectedServer && (
+        <ToolManager
+          serverId={selectedServer.id}
+          serverName={selectedServer.name}
+          onClose={() => setSelectedServer(null)}
+        />
+      )}
     </div>
   );
 }

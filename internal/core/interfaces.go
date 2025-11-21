@@ -29,6 +29,8 @@ type MockStrategy interface {
 // Registry manages the dynamic registration of Tools, Resources, and Prompts.
 type Registry interface {
 	RegisterTool(tool Tool) error
+	UpdateTool(name string, tool Tool) error
+	DeleteTool(name string) error
 	RegisterResource(resource Resource) error
 	RegisterPrompt(prompt Prompt) error
 	GetTool(name string) (Tool, bool)

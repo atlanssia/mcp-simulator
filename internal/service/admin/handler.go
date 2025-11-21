@@ -5,20 +5,30 @@ import (
 
 	"github.com/atlanssia/mcp-simulator/internal/core"
 	"github.com/atlanssia/mcp-simulator/internal/infra/manager"
+	"github.com/atlanssia/mcp-simulator/internal/infra/storage"
 	"github.com/atlanssia/mcp-simulator/internal/service/ai"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type Handler struct {
 	manager   *manager.ServerManager
 	generator *ai.Generator
+	storage   storage.Storage
+	logger    *zap.Logger
 }
 
-func NewHandler(manager *manager.ServerManager, generator *ai.Generator) *Handler {
+func NewHandler(manager *manager.ServerManager, generator *ai.Generator, logger *zap.Logger) *Handler {
 	return &Handler{
 		manager:   manager,
 		generator: generator,
+		logger:    logger,
 	}
+}
+
+// SetStorage sets the storage backend for persistence
+func (h *Handler) SetStorage(s storage.Storage) {
+	h.storage = s
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -45,6 +55,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// AI generation
 		api.POST("/ai/generate", h.GenerateMock)
+		api.POST("/ai/generate-schema", h.GenerateSchema)
 	}
 }
 
@@ -64,10 +75,20 @@ func (h *Handler) CreateServer(c *gin.Context) {
 		return
 	}
 
-	// In a real app, we'd persist this config
-	registry := core.NewInMemoryRegistry()
-	server := core.NewBaseVirtualServer(config, registry)
-	h.manager.AddServer(server)
+	// Use ServerManager's CreateServer method
+	_, err := h.manager.CreateServer(config)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Persist to storage
+	if h.storage != nil {
+		if err := h.storage.SaveServer(config); err != nil {
+			// Log error but don't fail the request
+			c.Header("X-Warning", "Failed to persist server: "+err.Error())
+		}
+	}
 
 	c.JSON(http.StatusCreated, config)
 }
@@ -109,11 +130,51 @@ func (h *Handler) GenerateMock(c *gin.Context) {
 
 	result, err := h.generator.GenerateMockData(c.Request.Context(), req.Prompt, req.Schema)
 	if err != nil {
+		h.logger.Error("Failed to generate mock data", zap.Error(err), zap.String("prompt", req.Prompt))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+type GenerateSchemaRequest struct {
+	Description string              `json:"description"`
+	Params      core.GenerationParams `json:"params"`
+}
+
+func (h *Handler) GenerateSchema(c *gin.Context) {
+	var req GenerateSchemaRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Use default params if not provided
+	if req.Params.Model == "" {
+		req.Params = core.DefaultGenerationParams()
+	}
+
+	// Log the request parameters for debugging
+	h.logger.Info("Generating schema",
+		zap.String("description", req.Description),
+		zap.String("model", req.Params.Model),
+		zap.Float64("temperature", req.Params.Temperature),
+		zap.String("system_prompt", req.Params.SystemPrompt),
+	)
+
+	schema, err := h.generator.GenerateToolSchemaWithParams(c.Request.Context(), req.Description, req.Params)
+	if err != nil {
+		h.logger.Error("Failed to generate schema",
+			zap.Error(err),
+			zap.String("description", req.Description),
+			zap.String("model", req.Params.Model),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, schema)
 }
 
 // ListTools returns all tools for a specific server
@@ -167,6 +228,14 @@ func (h *Handler) CreateTool(c *gin.Context) {
 		return
 	}
 
+	// Persist tools to storage
+	if h.storage != nil {
+		tools := targetServer.GetRegistry().ListTools()
+		if err := h.storage.SaveTools(serverID, tools); err != nil {
+			c.Header("X-Warning", "Failed to persist tools: "+err.Error())
+		}
+	}
+
 	c.JSON(http.StatusCreated, tool)
 }
 
@@ -205,9 +274,17 @@ func (h *Handler) UpdateTool(c *gin.Context) {
 	}
 
 	// Update by re-registering
-	if err := targetServer.GetRegistry().RegisterTool(tool); err != nil {
+	if err := targetServer.GetRegistry().UpdateTool(toolName, tool); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
+	}
+
+	// Persist tools to storage
+	if h.storage != nil {
+		tools := targetServer.GetRegistry().ListTools()
+		if err := h.storage.SaveTools(serverID, tools); err != nil {
+			c.Header("X-Warning", "Failed to persist tools: "+err.Error())
+		}
 	}
 
 	c.JSON(http.StatusOK, tool)
@@ -238,8 +315,20 @@ func (h *Handler) DeleteTool(c *gin.Context) {
 		return
 	}
 
-	// For InMemoryRegistry, we need to add a Delete method
-	// For now, we'll return success (actual deletion will be implemented when we add Delete to Registry interface)
+	// Delete the tool
+	if err := targetServer.GetRegistry().DeleteTool(toolName); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Persist tools to storage
+	if h.storage != nil {
+		tools := targetServer.GetRegistry().ListTools()
+		if err := h.storage.SaveTools(serverID, tools); err != nil {
+			c.Header("X-Warning", "Failed to persist tools: "+err.Error())
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "tool deleted"})
 }
 
@@ -258,23 +347,26 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	}
 
 	h.generator.UpdateConfig(config)
+
+	// Persist LLM config to storage
+	if h.storage != nil {
+		if err := h.storage.SaveLLMConfig(config); err != nil {
+			c.Header("X-Warning", "Failed to persist LLM config: "+err.Error())
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "configuration updated"})
 }
 
-// ListProviders returns available LLM providers
+// ListProviders returns available LLM providers with metadata
 func (h *Handler) ListProviders(c *gin.Context) {
-	providers := make([]gin.H, 0)
-	for key, preset := range ai.ProviderPresets {
-		providers = append(providers, gin.H{
-			"id":       key,
-			"name":     preset.Name,
-			"base_url": preset.BaseURL,
-		})
-	}
+	providers := ai.ListProviders()
 	c.JSON(http.StatusOK, providers)
 }
 
 // ListModels returns models for a specific provider
+// NOTE: This endpoint is deprecated in favor of dynamic model fetching
+// Keeping for backward compatibility, but returns empty list
 func (h *Handler) ListModels(c *gin.Context) {
 	provider := c.Query("provider")
 	if provider == "" {
@@ -282,26 +374,15 @@ func (h *Handler) ListModels(c *gin.Context) {
 		return
 	}
 
-	freeOnly := c.Query("free") == "true"
-
-	preset, ok := ai.ProviderPresets[provider]
+	// Verify provider exists
+	_, ok := ai.GetProviderInfo(provider)
 	if !ok {
 		c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
 		return
 	}
 
-	models := preset.Models
-	if freeOnly {
-		filtered := make([]ai.ModelInfo, 0)
-		for _, model := range models {
-			if model.Free {
-				filtered = append(filtered, model)
-			}
-		}
-		models = filtered
-	}
-
-	c.JSON(http.StatusOK, models)
+	// Return empty list - clients should use dynamic model fetching
+	c.JSON(http.StatusOK, []ai.ModelInfo{})
 }
 
 // GenerateToolMockResponse generates realistic mock response data for a tool
@@ -310,7 +391,8 @@ func (h *Handler) GenerateToolMockResponse(c *gin.Context) {
 	toolName := c.Param("toolName")
 
 	var req struct {
-		Params map[string]interface{} `json:"params"`
+		Params     map[string]interface{} `json:"params"`
+		Generation core.GenerationParams    `json:"generation"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -340,14 +422,25 @@ func (h *Handler) GenerateToolMockResponse(c *gin.Context) {
 	}
 
 	// Generate mock response
-	mockData, err := h.generator.GenerateMockResponse(
+	// Use default params if not provided
+	if req.Generation.Model == "" {
+		req.Generation = core.DefaultGenerationParams()
+	}
+
+	mockData, err := h.generator.GenerateMockResponseWithParams(
 		c.Request.Context(),
 		tool.Name,
 		tool.Description,
 		tool.InputSchema,
 		req.Params,
+		req.Generation,
 	)
 	if err != nil {
+		h.logger.Error("Failed to generate tool mock response",
+			zap.Error(err),
+			zap.String("tool", toolName),
+			zap.String("model", req.Generation.Model),
+		)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -369,39 +462,38 @@ func (h *Handler) ListDynamicModels(c *gin.Context) {
 	var models []ai.ModelInfo
 	var err error
 
+	// Get provider info to check if it supports dynamic models
+	providerInfo, ok := ai.GetProviderInfo(provider)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+		return
+	}
+
+	// Only fetch if provider supports dynamic models
+	if !providerInfo.SupportsModels {
+		c.JSON(http.StatusOK, []ai.ModelInfo{})
+		return
+	}
+
 	switch provider {
 	case "siliconflow":
 		// Fetch from SiliconFlow API
 		models, err = ai.FetchSiliconFlowModels(c.Request.Context(), config.APIKey)
 		if err != nil {
-			// Fallback to static presets on error
-			preset, ok := ai.ProviderPresets[provider]
-			if !ok {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			models = preset.Models
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
 		}
 	case "modelscope":
 		// Fetch from ModelScope API (no auth required!)
 		models, err = ai.FetchModelScopeModels(c.Request.Context())
 		if err != nil {
-			// Fallback to static presets on error
-			preset, ok := ai.ProviderPresets[provider]
-			if !ok {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			models = preset.Models
-		}
-	default:
-		// For other providers, use static presets
-		preset, ok := ai.ProviderPresets[provider]
-		if !ok {
-			c.JSON(http.StatusNotFound, gin.H{"error": "provider not found"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 			return
 		}
-		models = preset.Models
+	default:
+		// Provider does not support dynamic fetching
+		c.JSON(http.StatusOK, []ai.ModelInfo{})
+		return
 	}
 
 	// Apply free filter if requested

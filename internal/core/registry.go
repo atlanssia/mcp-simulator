@@ -27,6 +27,22 @@ func (r *InMemoryRegistry) RegisterTool(tool Tool) error {
 	return nil
 }
 
+func (r *InMemoryRegistry) UpdateTool(name string, tool Tool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Ensure tool name matches
+	tool.Name = name
+	r.tools[name] = tool
+	return nil
+}
+
+func (r *InMemoryRegistry) DeleteTool(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+	return nil
+}
+
 func (r *InMemoryRegistry) RegisterResource(resource Resource) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
