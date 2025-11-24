@@ -76,7 +76,7 @@ func main() {
 	}
 
 	// Initialize Admin Handler
-	adminHandler := admin.NewHandler(serverManager, aiGenerator, loggerInstance)
+	adminHandler := admin.NewHandler(serverManager, aiGenerator, store, loggerInstance)
 
 	// Setup router
 	router := gin.New()

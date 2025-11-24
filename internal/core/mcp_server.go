@@ -71,68 +71,68 @@ func (w *MCPServerWrapper) registerTools() error {
 // Official SDK expects: func(ctx, req, input) (*CallToolResult, output, error)
 func (w *MCPServerWrapper) createToolHandler(
 	tool Tool,
-) func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, string, error) {
-	return func(ctx context.Context, req *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, string, error) {
-		// Generate mock data using our generator
-		mockData, err := w.generator.GenerateMockResponseWithParams(
+) func(context.Context, *mcp.CallToolRequest, map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+	// Create a handler function that matches the signature expected by mcp.AddTool
+	// We use map[string]any for arguments to support dynamic inputs
+	// We use map[string]any for output to satisfy the SDK's requirement that output schema must be an object
+	handler := func(ctx context.Context, request *mcp.CallToolRequest, args map[string]any) (*mcp.CallToolResult, map[string]any, error) {
+		// Convert args to map[string]interface{} for the generator
+		inputParams := make(map[string]interface{})
+		for k, v := range args {
+			inputParams[k] = v
+		}
+
+		// Generate mock response
+		// Use default generation params if not provided in context (which they aren't here)
+		genParams := DefaultGenerationParams()
+
+		// TODO: In the future, we might want to pass generation params via context or other means
+
+		resultData, err := w.generator.GenerateMockResponseWithParams(
 			ctx,
 			tool.Name,
 			tool.Description,
 			tool.InputSchema,
-			args,
-			DefaultGenerationParams(),
+			inputParams,
+			genParams,
 		)
 		if err != nil {
-			// Return error via CallToolResult
 			return &mcp.CallToolResult{
 				IsError: true,
 				Content: []mcp.Content{
-					&mcp.TextContent{Text: fmt.Sprintf("Error: %v", err)},
+					&mcp.TextContent{Text: fmt.Sprintf("Error generating response: %v", err)},
 				},
-			}, "", nil
+			}, nil, nil
 		}
 
-		// Convert mockData to JSON string if it's not already
-		var resultText string
-		switch v := mockData.(type) {
-		case string:
-			resultText = v
-		case []byte:
-			resultText = string(v)
-		default:
-			// Marshal to JSON
-			jsonData, err := json.Marshal(mockData)
-			if err != nil {
-				return &mcp.CallToolResult{
-					IsError: true,
-					Content: []mcp.Content{
-						&mcp.TextContent{Text: fmt.Sprintf("failed to marshal response: %v", err)},
-					},
-				}, "", nil
-			}
-			resultText = string(jsonData)
+		// Convert result to JSON string for text content
+		resultJSON, err := json.MarshalIndent(resultData, "", "  ")
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Error marshaling result: %v", err)},
+				},
+			}, nil, nil
 		}
 
-		// Return result - the second return value is the "output" that will be marshaled
-		// We return nil CallToolResult to let SDK create it automatically from the string output
-		return nil, resultText, nil
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				&mcp.TextContent{Text: string(resultJSON)},
+			},
+		}, nil, nil
 	}
+
+	return handler
 }
 
 // GetHTTPHandler returns the official MCP SDK HTTP handler with SSE support
 func (w *MCPServerWrapper) GetHTTPHandler() http.Handler {
-	// Use official SDK's NewStreamableHTTPHandler
-	// The first argument is a function that returns the server for a given request
-	// Since we have a single server instance, we return it for all requests
 	getServer := func(r *http.Request) *mcp.Server {
 		return w.server
 	}
-
-	// This automatically handles:
-	// - GET / : discovery
-	// - GET / with Accept:text/event-stream : SSE connection + endpoint event
-	// - POST / : JSON-RPC requests (with SSE response if session exists)
-	return mcp.NewStreamableHTTPHandler(getServer, nil)
+	// Use NewSSEHandler for standard SSE support (GET-first) which Dify expects
+	return mcp.NewSSEHandler(getServer, nil)
 }
 
 // UpdateTools refreshes tools from registry

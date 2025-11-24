@@ -360,7 +360,7 @@ Sample Parameters: %s
 Output Requirements:
 1. Return ONLY valid JSON (no markdown, no explanations)
 2. Data should be realistic and match the tool's purpose
-3. For time-series/tabular data, generate 5-10 records
+3. For time-series/tabular data, if the tool description specifies a quantity, use that quantity. Otherwise, generate 5-10 records
 4. Use proper data types (strings in quotes, numbers without quotes)
 
 Example formats:
@@ -372,8 +372,13 @@ Now generate the mock data:`, toolName, toolDescription, string(schemaBytes), st
 
 	// For ModelScope compatibility
 	enableThinking := false
+	model := params.Model
+	if model == "" {
+		model = config.Model
+	}
+
 	reqBody := CompletionRequest{
-		Model: params.Model,
+		Model: model,
 		Messages: []Message{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: userMessage},

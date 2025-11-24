@@ -18,10 +18,11 @@ type Handler struct {
 	logger    *zap.Logger
 }
 
-func NewHandler(manager *manager.ServerManager, generator *ai.Generator, logger *zap.Logger) *Handler {
+func NewHandler(manager *manager.ServerManager, generator *ai.Generator, storage storage.Storage, logger *zap.Logger) *Handler {
 	return &Handler{
 		manager:   manager,
 		generator: generator,
+		storage:   storage,
 		logger:    logger,
 	}
 }
