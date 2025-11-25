@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/atlanssia/mcp-simulator/internal/core"
 	"go.uber.org/zap"
@@ -350,6 +351,13 @@ Rules:
 		userMessage = params.SystemPrompt + "\n\n"
 	}
 
+	// Generate example timestamps for prompt (last 4 hours)
+	now := time.Now()
+	exampleTime1 := now.Add(-3 * time.Hour).Format("15:04")
+	exampleTime2 := now.Add(-2 * time.Hour).Format("15:04")
+	exampleTime3 := now.Add(-1 * time.Hour).Format("15:04")
+	currentTimeStr := now.Format("2006-01-02 15:04")
+
 	userMessage += fmt.Sprintf(`Task: Generate realistic mock response data for this MCP tool.
 
 Tool Name: %s
@@ -362,13 +370,30 @@ Output Requirements:
 2. Data should be realistic and match the tool's purpose
 3. For time-series/tabular data, if the tool description specifies a quantity, use that quantity. Otherwise, generate 5-10 records
 4. Use proper data types (strings in quotes, numbers without quotes)
+5. **IMPORTANT for vitals/medical data**: Split compound values into separate records
+   - Blood Pressure: Use "SBP" (Systolic), "DBP" (Diastolic), "MAP" (Mean Arterial) as separate records
+   - DO NOT use composite values like "120/80" - split them into individual numeric values
+6. **IMPORTANT for timestamps**: Generate realistic, recent timestamps
+   - Time-series vitals/monitoring data: Use recent hours (e.g., last 4 hours from now)
+   - Static/historical data: Use recent days or weeks
+   - Format: "HH:MM" for time-only, "YYYY-MM-DD HH:MM" for datetime
+   - Example: For current time %s, vitals should use times like "%s", "%s", "%s"
 
 Example formats:
-- Weather data: {"temperature": 22.5, "condition": "Partly Cloudy", "humidity": 65, "wind_speed": 12}
-- Patient vitals (multiple records): {"records": [{"time": "2023-10-15 08:30", "item": "体温", "value": "38.5", "unit": "℃"}, ...]}
-- Calculation result: {"result": 30, "operation": "sum"}
+- Weather: {"temperature": 22.5, "condition": "Partly Cloudy", "humidity": 65, "wind_speed": 12}
+- Simple vitals: [{"name": "Temp", "value": 36.5, "unit": "°C", "group_key": "Temperature", "ts": "%s"}]
+- Blood Pressure (CORRECT - split into separate records):
+  [
+    {"name": "SBP", "value": 120, "unit": "mmHg", "group_key": "Blood Pressure", "ts": "%s"},
+    {"name": "DBP", "value": 80, "unit": "mmHg", "group_key": "Blood Pressure", "ts": "%s"},
+    {"name": "MAP", "value": 93, "unit": "mmHg", "group_key": "Blood Pressure", "ts": "%s"}
+  ]
+- Blood Pressure (WRONG - do NOT use): {"value": "120/80", ...}
 
-Now generate the mock data:`, toolName, toolDescription, string(schemaBytes), string(paramsBytes))
+Now generate the mock data:`,
+		toolName, toolDescription, string(schemaBytes), string(paramsBytes),
+		currentTimeStr, exampleTime1, exampleTime2, exampleTime3,
+		exampleTime1, exampleTime1, exampleTime1, exampleTime1)
 
 	// For ModelScope compatibility
 	enableThinking := false
