@@ -6,6 +6,7 @@ export interface ServerConfig {
     name: string;
     port: number;
     status?: string; // "stopped", "starting", "running", "error"
+    mock_strategy?: string; // "llm" | "static" | "hybrid"
 }
 
 export interface GenerateRequest {
@@ -29,6 +30,7 @@ export interface Tool {
     name: string;
     description: string;
     inputSchema: Record<string, unknown>;
+    static_mock_data?: any; // Pre-generated data for static mode
 }
 
 export interface LLMConfig {
@@ -69,6 +71,7 @@ export const api = {
     // Server management
     listServers: () => axiosInstance.get<ServerConfig[]>('/servers'),
     createServer: (config: ServerConfig) => axiosInstance.post<ServerConfig>('/servers', config),
+    updateServerConfig: (id: string, updates: Partial<ServerConfig>) => axiosInstance.put(`/servers/${id}/config`, updates),
     startServer: (id: string) => axiosInstance.post(`/servers/${id}/start`),
     stopServer: (id: string) => axiosInstance.post(`/servers/${id}/stop`),
 
@@ -96,4 +99,6 @@ export const api = {
     generateSchema: (request: GenerateSchemaRequest) => axiosInstance.post<Record<string, unknown>>('/ai/generate-schema', request),
     generateToolMock: (serverId: string, toolName: string, params: any, generation: GenerationParams) =>
         axiosInstance.post<any>(`/servers/${serverId}/tools/${toolName}/generate-mock`, { params, generation }),
+    generateStaticData: (serverId: string, toolName: string, params: any, generation: GenerationParams) =>
+        axiosInstance.post<{ static_mock_data: any }>(`/servers/${serverId}/tools/${toolName}/static-data/generate`, { params, generation }),
 };

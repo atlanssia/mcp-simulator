@@ -37,6 +37,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		api.GET("/servers", h.ListServers)
 		api.POST("/servers", h.CreateServer)
+		api.PUT("/servers/:id/config", h.UpdateServerConfig)
 		api.POST("/servers/:id/start", h.StartServer)
 		api.POST("/servers/:id/stop", h.StopServer)
 
@@ -46,6 +47,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		api.PUT("/servers/:id/tools/:toolName", h.UpdateTool)
 		api.DELETE("/servers/:id/tools/:toolName", h.DeleteTool)
 		api.POST("/servers/:id/tools/:toolName/generate-mock", h.GenerateToolMockResponse)
+		api.POST("/servers/:id/tools/:toolName/static-data/generate", h.GenerateStaticData)
 
 		// LLM configuration endpoints
 		api.GET("/config/llm", h.GetLLMConfig)
@@ -110,6 +112,63 @@ func (h *Handler) StopServer(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"status": "stopped"})
+}
+
+// UpdateServerConfig updates server configuration (e.g., mock_strategy)
+func (h *Handler) UpdateServerConfig(c *gin.Context) {
+	id := c.Param("id")
+
+	var updates struct {
+		MockStrategy string `json:"mock_strategy"`
+	}
+	if err := c.ShouldBindJSON(&updates); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Find the server
+	servers := h.manager.ListServers()
+	var targetServer core.VirtualServer
+	for _, s := range servers {
+		if s.ID() == id {
+			targetServer = s
+			break
+		}
+	}
+
+	if targetServer == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	// Get current config and update
+	config := targetServer.Config()
+	if updates.MockStrategy != "" {
+		// Validate strategy
+		if updates.MockStrategy != "llm" && updates.MockStrategy != "static" && updates.MockStrategy != "hybrid" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid mock_strategy, must be llm, static, or hybrid"})
+			return
+		}
+		config.MockStrategy = updates.MockStrategy
+	}
+
+	// Update the running server instance
+	if baseServer, ok := targetServer.(*core.BaseVirtualServer); ok {
+		baseServer.UpdateConfig(config)
+	}
+
+	// Persist to storage
+	if h.storage != nil {
+		if err := h.storage.SaveServer(config); err != nil {
+			c.Header("X-Warning", "Failed to persist server config: "+err.Error())
+		}
+	}
+
+	// Note: Server needs to be restarted for mock_strategy change to take effect
+	c.JSON(http.StatusOK, gin.H{
+		"message": "config updated, please restart server for changes to take effect",
+		"config":  config,
+	})
 }
 
 type GenerateRequest struct {
@@ -456,6 +515,91 @@ func (h *Handler) GenerateToolMockResponse(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, mockData)
+}
+
+// GenerateStaticData generates and saves static mock data for a tool
+func (h *Handler) GenerateStaticData(c *gin.Context) {
+	serverID := c.Param("id")
+	toolName := c.Param("toolName")
+
+	var req struct {
+		Params     map[string]interface{} `json:"params"`
+		Generation core.GenerationParams  `json:"generation"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Find the server
+	servers := h.manager.ListServers()
+	var targetServer core.VirtualServer
+	for _, s := range servers {
+		if s.Config().ID == serverID {
+			targetServer = s
+			break
+		}
+	}
+
+	if targetServer == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "server not found"})
+		return
+	}
+
+	// Get the tool
+	tool, ok := targetServer.GetRegistry().GetTool(toolName)
+	if !ok {
+		c.JSON(http.StatusNotFound, gin.H{"error": "tool not found"})
+		return
+	}
+
+	// Generate static mock data using LLM
+	if req.Generation.Model == "" {
+		req.Generation = core.DefaultGenerationParams()
+	}
+
+	staticData, err := h.generator.GenerateMockResponseWithParams(
+		c.Request.Context(),
+		tool.Name,
+		tool.Description,
+		tool.InputSchema,
+		req.Params,
+		req.Generation,
+	)
+	if err != nil {
+		h.logger.Error("Failed to generate static mock data",
+			zap.Error(err),
+			zap.String("tool", toolName),
+			zap.String("model", req.Generation.Model),
+		)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Update tool with generated static data
+	tool.StaticMockData = staticData
+
+	// Save tool to registry
+	if err := targetServer.GetRegistry().UpdateTool(toolName, tool); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Persist to storage
+	if h.storage != nil {
+		tools := targetServer.GetRegistry().ListTools()
+		if err := h.storage.SaveTools(serverID, tools); err != nil {
+			c.Header("X-Warning", "Failed to persist tools: "+err.Error())
+		}
+	}
+
+	// Notify server to update MCP tools
+	targetServer.UpdateTools()
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":          "static mock data generated and saved",
+		"static_mock_data": staticData,
+	})
 }
 
 // ListDynamicModels returns models fetched dynamically from provider APIs

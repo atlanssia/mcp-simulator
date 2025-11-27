@@ -29,6 +29,10 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
     const [generating, setGenerating] = useState(false);
     const [schemaJson, setSchemaJson] = useState('');
 
+    // Static data generation
+    const [generatingStatic, setGeneratingStatic] = useState(false);
+    const [staticDataJson, setStaticDataJson] = useState('');
+
     const fetchTools = async () => {
         try {
             const response = await api.listTools(serverId);
@@ -91,6 +95,7 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
     const handleEdit = (tool: Tool) => {
         setEditingTool(tool);
         setSchemaJson(JSON.stringify(tool.inputSchema, null, 2));
+        setStaticDataJson(tool.static_mock_data ? JSON.stringify(tool.static_mock_data, null, 2) : '');
         setIsCreating(false);
         setShowGenSettings(false);
     };
@@ -110,7 +115,8 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
 
             const toolToSave = {
                 ...editingTool,
-                inputSchema: parsedSchema
+                inputSchema: parsedSchema,
+                static_mock_data: staticDataJson ? JSON.parse(staticDataJson) : undefined
             };
 
             if (isCreating) {
@@ -193,6 +199,29 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
             alert(`Failed to generate mock data: ${errorMessage}`);
         } finally {
             setTestGenerating(false);
+        }
+    };
+
+    const handleGenerateStaticData = async () => {
+        if (!editingTool) return;
+
+        setGeneratingStatic(true);
+        try {
+            // Use empty params for default generation
+            const params = {};
+            const response = await api.generateStaticData(serverId, editingTool.name, params, genParams);
+
+            if (response.data?.static_mock_data) {
+                const staticData = response.data.static_mock_data;
+                setEditingTool({ ...editingTool, static_mock_data: staticData });
+                setStaticDataJson(JSON.stringify(staticData, null, 2));
+            }
+        } catch (error: any) {
+            console.error('Failed to generate static data:', error);
+            const errorMessage = error.response?.data?.error || error.message || 'Unknown error';
+            alert(`Failed to generate static data: ${errorMessage}`);
+        } finally {
+            setGeneratingStatic(false);
         }
     };
 
@@ -332,6 +361,33 @@ export function ToolManager({ serverId, serverName, onClose }: ToolManagerProps)
                                     rows={10}
                                 />
                             </div>
+
+                            {/* Static Mock Data Section */}
+                            <div className="border border-gray-700 rounded-lg p-3 bg-gray-900/30">
+                                <div className="flex items-center justify-between mb-2">
+                                    <label className="text-sm font-medium text-gray-300">Static Mock Data (for Static Mode)</label>
+                                    <button
+                                        onClick={handleGenerateStaticData}
+                                        disabled={generatingStatic || !editingTool.name || !editingTool.description}
+                                        className="flex items-center gap-1 px-3 py-1 bg-purple-600 hover:bg-purple-700 rounded text-white text-xs transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                    >
+                                        {generatingStatic ? '⏳ Generating...' : '✨ Generate with LLM'}
+                                    </button>
+                                </div>
+                                {staticDataJson && (
+                                    <textarea
+                                        value={staticDataJson}
+                                        onChange={(e) => setStaticDataJson(e.target.value)}
+                                        className="w-full bg-gray-950 border border-gray-700 rounded px-3 py-2 text-green-400 font-mono text-xs"
+                                        rows={8}
+                                        placeholder="Generated static data will appear here..."
+                                    />
+                                )}
+                                {!staticDataJson && (
+                                    <p className="text-xs text-gray-500 italic">No static data. Click "Generate with LLM" to create.</p>
+                                )}
+                            </div>
+
                             <div className="flex gap-2">
                                 <button
                                     onClick={handleSave}

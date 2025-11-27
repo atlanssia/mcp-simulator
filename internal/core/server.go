@@ -100,6 +100,13 @@ func (s *BaseVirtualServer) GetRegistry() Registry {
 	return s.registry
 }
 
+// UpdateConfig updates the server configuration
+func (s *BaseVirtualServer) UpdateConfig(config ServerConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.config = config
+}
+
 func (s *BaseVirtualServer) Start(ctx context.Context) error {
 	s.mu.Lock()
 	if s.status == "running" {
@@ -111,10 +118,15 @@ func (s *BaseVirtualServer) Start(ctx context.Context) error {
 
 	// Create official MCP SDK server wrapper
 	var err error
+	mockStrategy := s.config.MockStrategy
+	if mockStrategy == "" {
+		mockStrategy = "hybrid" // Default to hybrid if not specified
+	}
 	s.mcpServer, err = NewMCPServerWrapper(
 		s.config.Name,
 		s.registry,
 		s.generator,
+		mockStrategy,
 	)
 	if err != nil {
 		s.mu.Lock()

@@ -119,9 +119,28 @@ export function ServerList({ onSelectServer }: ServerListProps) {
                                         <h3 className="text-lg font-semibold text-white">{server.name}</h3>
                                         {getStatusBadge(server.status)}
                                     </div>
-                                    <p className="text-sm text-gray-400">
+                                    <p className="text-sm text-gray-400 mb-2">
                                         ID: {server.id} | Port: {server.port}
                                     </p>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xs text-gray-500">Mock Strategy:</span>
+                                        <select
+                                            value={server.mock_strategy || 'hybrid'}
+                                            onChange={async (e) => {
+                                                try {
+                                                    await api.updateServerConfig(server.id, { mock_strategy: e.target.value });
+                                                    fetchServers();
+                                                } catch (error) {
+                                                    console.error('Failed to update strategy:', error);
+                                                }
+                                            }}
+                                            className="text-xs bg-gray-700 text-gray-300 border border-gray-600 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                                        >
+                                            <option value="hybrid">🔄 Hybrid (LLM + Fallback)</option>
+                                            <option value="llm">🤖 LLM Only</option>
+                                            <option value="static">📊 Static Only</option>
+                                        </select>
+                                    </div>
                                 </div>
                                 <div className="flex gap-2">
                                     <button

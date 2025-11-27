@@ -12,9 +12,10 @@ import (
 
 // MCPServerWrapper wraps official MCP SDK server with our tool registry
 type MCPServerWrapper struct {
-	server    *mcp.Server
-	registry  Registry
-	generator MockGenerator
+	server       *mcp.Server
+	registry     Registry
+	generator    MockGenerator
+	mockStrategy string // "llm" | "static" | "hybrid"
 }
 
 // NewMCPServerWrapper creates a new MCP server with tools from registry
@@ -22,6 +23,7 @@ func NewMCPServerWrapper(
 	name string,
 	registry Registry,
 	gen MockGenerator,
+	mockStrategy string,
 ) (*MCPServerWrapper, error) {
 	// Create official MCP SDK server
 	impl := &mcp.Implementation{
@@ -32,9 +34,10 @@ func NewMCPServerWrapper(
 	server := mcp.NewServer(impl, nil)
 
 	wrapper := &MCPServerWrapper{
-		server:    server,
-		registry:  registry,
-		generator: gen,
+		server:       server,
+		registry:     registry,
+		generator:    gen,
+		mockStrategy: mockStrategy,
 	}
 
 	// Register all tools from registry
@@ -83,23 +86,62 @@ func (w *MCPServerWrapper) createToolHandler(
 			inputParams[k] = v
 		}
 
-		// Generate mock response
-		// Use default generation params if not provided in context (which they aren't here)
-		genParams := DefaultGenerationParams()
+		// Determine mock strategy (default to "hybrid" if empty)
+		strategy := w.mockStrategy
+		if strategy == "" {
+			strategy = "hybrid"
+		}
 
-		// TODO: In the future, we might want to pass generation params via context or other means
+		var resultData interface{}
+		var err error
 
-		resultData, err := w.generator.GenerateMockResponseWithParams(
-			ctx,
-			tool.Name,
-			tool.Description,
-			tool.InputSchema,
-			inputParams,
-			genParams,
-		)
-		if err != nil {
-			// Fallback to static vitals if LLM fails
-			resultData = generateStaticVitals(inputParams)
+		switch strategy {
+		case "static":
+			// Static-only mode: use tool-specific static data if available
+			if tool.StaticMockData != nil {
+				resultData = tool.StaticMockData
+			} else {
+				// Fallback to generic vitals for backward compatibility
+				resultData = generateStaticVitals(inputParams)
+			}
+
+		case "llm":
+			// LLM-only mode: only use LLM, fail if it fails
+			genParams := DefaultGenerationParams()
+			resultData, err = w.generator.GenerateMockResponseWithParams(
+				ctx,
+				tool.Name,
+				tool.Description,
+				tool.InputSchema,
+				inputParams,
+				genParams,
+			)
+			if err != nil {
+				return &mcp.CallToolResult{
+					IsError: true,
+					Content: []mcp.Content{
+						&mcp.TextContent{Text: fmt.Sprintf("LLM generation failed: %v", err)},
+					},
+				}, nil, nil
+			}
+
+		case "hybrid":
+			fallthrough
+		default:
+			// Hybrid mode (default): try LLM first, fallback to static
+			genParams := DefaultGenerationParams()
+			resultData, err = w.generator.GenerateMockResponseWithParams(
+				ctx,
+				tool.Name,
+				tool.Description,
+				tool.InputSchema,
+				inputParams,
+				genParams,
+			)
+			if err != nil {
+				// Fallback to static vitals if LLM fails
+				resultData = generateStaticVitals(inputParams)
+			}
 		}
 
 		// Convert result to JSON string for text content

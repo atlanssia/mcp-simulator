@@ -16,10 +16,11 @@ type VirtualServer interface {
 
 // ServerConfig holds configuration for a VirtualServer.
 type ServerConfig struct {
-	ID     string `json:"id"`
-	Port   int    `json:"port"`
-	Name   string `json:"name"`
-	Status string `json:"status"` // "stopped", "starting", "running", "error"
+	ID           string `json:"id"`
+	Port         int    `json:"port"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`        // "stopped", "starting", "running", "error"
+	MockStrategy string `json:"mock_strategy"` // "llm" | "static" | "hybrid" (default: "hybrid")
 }
 
 // MockStrategy defines how to generate a response for a given request.
@@ -41,9 +42,10 @@ type Registry interface {
 
 // Tool represents an MCP tool definition.
 type Tool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
+	Name           string                 `json:"name"`
+	Description    string                 `json:"description"`
+	InputSchema    map[string]interface{} `json:"inputSchema"`
+	StaticMockData interface{}            `json:"static_mock_data,omitempty"` // Pre-generated data for static mode
 }
 
 // Resource represents an MCP resource definition.
